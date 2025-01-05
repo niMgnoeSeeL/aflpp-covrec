@@ -326,6 +326,10 @@ static void locate_diffs(u8 *ptr1, u8 *ptr2, u32 len, s32 *first, s32 *last) {
 
 u8 fuzz_one_original(afl_state_t *afl) {
 
+  // DEBUG:: when we turn INGORE_FINDS on, it stops fuzzing. Check
+  // where it stops.
+  // printf("DEBUG::main::entry of fuzz_one_original(afl)::afl->queue_cur->depth=%d,afl->queue_cur->fname=%s\n", afl->queue_cur->depth, afl->queue_cur->fname);
+
   u32 len, temp_len;
   u32 j;
   u32 i;

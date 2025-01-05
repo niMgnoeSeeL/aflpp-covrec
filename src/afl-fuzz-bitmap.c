@@ -520,7 +520,25 @@ u8 __attribute__((hot)) save_if_interesting(afl_state_t *afl, void *mem,
 
     }
 
-    if (likely(!new_bits)) {
+#ifdef IGNORE_FINDS
+    bool ignore_finds = true;
+    if (unlikely(new_bits)) {
+      // copied from add_to_queue
+      u64 cur_time = get_cur_time();
+      if (likely(afl->start_time) &&
+          unlikely(afl->longest_find_time < cur_time - afl->last_find_time)) {
+        if (unlikely(!afl->last_find_time)) {
+          afl->longest_find_time = cur_time - afl->start_time;
+        } else {
+          afl->longest_find_time = cur_time - afl->last_find_time;
+        }
+      }
+      afl->last_find_time = cur_time;
+    }
+#else
+    bool ignore_finds = false;
+#endif
+    if (likely(!new_bits || ignore_finds)) {
 
       if (unlikely(afl->crash_mode)) { ++afl->total_crashes; }
       return 0;

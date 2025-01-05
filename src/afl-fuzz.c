@@ -2933,7 +2933,7 @@ int main(int argc, char **argv_orig, char **envp) {
 
         if (afl->current_entry >= afl->queued_items) { afl->current_entry = 0; }
 
-        afl->queue_cur = afl->queue_buf[afl->current_entry];
+        afl->queue_cur = afl->queue_buf[afl->current_entry]; //printf("DEBUG::main::queue_cur defined at line 2936 (old_seed_selection)\n");
 
         if (unlikely(seek_to)) {
 
@@ -2945,7 +2945,7 @@ int main(int argc, char **argv_orig, char **envp) {
           }
 
           afl->current_entry = seek_to;
-          afl->queue_cur = afl->queue_buf[seek_to];
+          afl->queue_cur = afl->queue_buf[seek_to]; //printf("DEBUG::main::queue_cur defined at line 2948 (old_seed_selection-seek_to)\n");
           seek_to = 0;
 
         }
@@ -3130,7 +3130,7 @@ int main(int argc, char **argv_orig, char **envp) {
 
           */
 
-          afl->queue_cur = afl->queue_buf[afl->current_entry];
+          afl->queue_cur = afl->queue_buf[afl->current_entry]; //printf("DEBUG::main::queue_cur defined at line 3133 (!old_seed_selection,smallest_favored)\n");
 
         } else {
 
@@ -3150,12 +3150,15 @@ int main(int argc, char **argv_orig, char **envp) {
 
           } while (unlikely(afl->current_entry >= afl->queued_items));
 
-          afl->queue_cur = afl->queue_buf[afl->current_entry];
+          afl->queue_cur = afl->queue_buf[afl->current_entry]; //printf("DEBUG::main::queue_cur defined at line 3153 (!old_seed_selection,select_next_queue_entry(afl))\n");
 
         }
 
       }
-
+      // DEBUG:: when we turn INGORE_FINDS on, it stops fuzzing. Check
+      // where it stops.
+      // printf("DEBUG::main::before fuzz_one(afl)::afl->queue_cur->fname=%s\n",
+      //        afl->queue_cur->fname);
       skipped_fuzz = fuzz_one(afl);
   #ifdef INTROSPECTION
       ++afl->queue_cur->stats_selected;
@@ -3203,11 +3206,11 @@ int main(int argc, char **argv_orig, char **envp) {
                      afl->queue_buf[afl->current_entry] == NULL ||
                      afl->queue_buf[afl->current_entry]->disabled)) {
 
-          afl->queue_cur = NULL;
+          afl->queue_cur = NULL; //printf("DEBUG::main::queue_cur defined NULL at line 3209(after fuzz_one,old_seed_selection)\n");
 
         } else {
 
-          afl->queue_cur = afl->queue_buf[afl->current_entry];
+          afl->queue_cur = afl->queue_buf[afl->current_entry]; //printf("DEBUG::main::queue_cur defined at line 3213 (after fuzz_one,old_seed_selection)\n");
 
         }
 

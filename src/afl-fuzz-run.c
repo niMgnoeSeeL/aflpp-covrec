@@ -1184,6 +1184,11 @@ abort_trimming:
 u8 __attribute__((hot)) common_fuzz_stuff(afl_state_t *afl, u8 *out_buf,
                                           u32 len) {
 
+  // DEBUG:: when we turn INGORE_FINDS on, it stops fuzzing. Check
+  // where it stops.
+  // printf("DEBUG::main::entry of common_fuzz_stuff::afl->queue_cur->fname=%s\n",
+  // afl->queue_cur->fname);
+
   u8 fault;
 
   if (unlikely(len = write_to_testcase(afl, (void **)&out_buf, len, 0)) == 0) {

@@ -64,6 +64,8 @@ inline u32 select_next_queue_entry(afl_state_t *afl) {
 
 void create_alias_table(afl_state_t *afl) {
 
+  printf("DEBUG::create_alias_table is called\n");
+
   u32    n = afl->queued_items, i = 0, nSmall = 0, nLarge = n - 1;
   double sum = 0;
 
