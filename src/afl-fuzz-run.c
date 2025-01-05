@@ -44,6 +44,7 @@ u64 time_spent_working = 0;
 fsrv_run_result_t __attribute__((hot)) fuzz_run_target(afl_state_t      *afl,
                                                        afl_forkserver_t *fsrv,
                                                        u32 timeout) {
+  // printf("|A%d", afl->record_sampling);
 
 #ifdef PROFILING
   static u64      time_spent_start = 0;
@@ -1188,6 +1189,7 @@ u8 __attribute__((hot)) common_fuzz_stuff(afl_state_t *afl, u8 *out_buf,
   // where it stops.
   // printf("DEBUG::main::entry of common_fuzz_stuff::afl->queue_cur->fname=%s\n",
   // afl->queue_cur->fname);
+  // printf("|T%d", afl->record_sampling);
 
   u8 fault;
 

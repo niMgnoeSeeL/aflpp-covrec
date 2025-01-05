@@ -3280,11 +3280,14 @@ havoc_stage:
     }
 
     afl->record_sampling = true;
+    // printf("S%d", afl->record_sampling);
     if (common_fuzz_stuff(afl, out_buf, temp_len)) {
       afl->record_sampling = false;
+      // printf("|Don%d\n", afl->record_sampling);
       goto abandon_entry; 
     }
     afl->record_sampling = false;
+    // printf("|Don%d\n", afl->record_sampling);
 
     /* out_buf might have been mangled a bit, so let's restore it to its
        original size and shape. */

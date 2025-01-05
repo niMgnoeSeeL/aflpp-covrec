@@ -144,6 +144,7 @@ const char *idx_to_str(u32 idx) {
 }
 
 void afl_custom_post_run(my_mutator_t *data) {
+  // printf("|C%d", data->afl->record_sampling);
   if (data->reset_after_tmin &&
       get_cur_time() - data->afl->start_time > data->tmin) {
     reset_data(data);
@@ -151,6 +152,8 @@ void afl_custom_post_run(my_mutator_t *data) {
   }
 
   if (!data->afl->record_sampling) { return; }
+  // printf("|R%d", data->afl->record_sampling);
+  data->afl->record_sampling = false;
   data->n_execs++;
 
   u32  i;
