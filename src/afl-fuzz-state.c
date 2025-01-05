@@ -148,6 +148,7 @@ void afl_state_init(afl_state_t *afl, uint32_t map_size) {
 
   list_append(&afl_states, afl);
 
+  afl->record_sampling = false;
 }
 
 /*This sets up the environment variables for afl-fuzz into the afl_state

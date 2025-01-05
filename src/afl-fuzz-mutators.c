@@ -406,7 +406,7 @@ struct custom_mutator *load_custom_mutator(afl_state_t *afl, const char *fn) {
   } else {
 
     OKF("Found 'afl_custom_post_run'.");
-
+    mutator->afl_custom_end_job = dlsym(dh, "afl_custom_end_job");
   }
 
   /* "afl_custom_queue_new_entry", optional */
@@ -654,3 +654,9 @@ abort_trimming:
 
 }
 
+void write_custom_mutator_data(afl_state_t *afl) {
+  if (afl->custom_mutators_count) {
+    LIST_FOREACH_CLEAR(&afl->custom_mutator_list, struct custom_mutator,
+                       { el->afl_custom_end_job(el->data); });
+  }
+}

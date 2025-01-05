@@ -855,6 +855,8 @@ typedef struct afl_state {
   u32   bitsmap_size;
 #endif
 
+  bool record_sampling;
+
 } afl_state_t;
 
 struct custom_mutator {
@@ -1096,6 +1098,11 @@ struct custom_mutator {
    * @param data pointer returned in afl_custom_init by this custom mutator
    */
   void (*afl_custom_post_run)(void *data);
+
+  /**
+   * Seongmin's additional function for end job of custom mutator
+   */
+  void (*afl_custom_end_job) (void *data);
 
   /**
    * Allow for additional analysis (e.g. calling a different tool that does a
