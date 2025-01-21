@@ -77,6 +77,9 @@
   #include "llvm/Transforms/Utils/Instrumentation.h"
 #endif
 
+#include "llvm/Support/GraphWriter.h"
+#include <fstream>
+
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
@@ -585,6 +588,38 @@ static bool IsInterestingCmp(ICmpInst *CMP, const DominatorTree *DT,
 
 #endif
 
+template <>
+struct DOTGraphTraits<Function *> : public DefaultDOTGraphTraits {
+  static const std::set<const BasicBlock *> *InstrumentedBlocks;
+
+  DOTGraphTraits(bool isSimple = false) : DefaultDOTGraphTraits(isSimple) {}
+
+  static void setInstrumentedBlocks(const std::set<const BasicBlock *> &Blocks) {
+    InstrumentedBlocks = &Blocks;
+  }
+
+  std::string getNodeLabel(const BasicBlock *Node, const Function *Graph) {
+    if (Node->hasName()) {
+      return Node->getName().str(); // Use the basic block's name as the label
+    } else {
+      std::string Str;
+      raw_string_ostream OS(Str);
+      Node->printAsOperand(OS, false); // Generate a unique identifier for unnamed blocks
+      return OS.str();
+    }
+  }
+
+  std::string getNodeAttributes(const BasicBlock *Node, const Function *Graph) {
+    if (InstrumentedBlocks && InstrumentedBlocks->count(Node)) {
+      return "color=red, style=filled"; // Highlight selected blocks in red
+    }
+    return "";
+  }
+};
+
+// Define the static member
+const std::set<const BasicBlock *> *DOTGraphTraits<Function *>::InstrumentedBlocks = nullptr;
+
 void ModuleSanitizerCoverageAFL::instrumentFunction(
     Function &F, DomTreeCallback DTCallback, PostDomTreeCallback PDTCallback) {
 
@@ -649,6 +684,44 @@ void ModuleSanitizerCoverageAFL::instrumentFunction(
 
     */
 
+  }
+
+    // Save the CFG to a Graphviz (.dot) file with highlighted nodes
+  std::string Filename = F.getName().str() + ".dot";
+  std::error_code EC;
+  raw_fd_ostream File(Filename, EC, sys::fs::OF_Text);
+
+  if (!EC) {
+    // Create a set of instrumented blocks to be used by DOTGraphTraits
+    std::set<const BasicBlock *> InstrumentedBlockSet(
+        BlocksToInstrument.begin(), BlocksToInstrument.end());
+
+    // Set the static instrumented blocks in DOTGraphTraits
+    DOTGraphTraits<Function *>::setInstrumentedBlocks(InstrumentedBlockSet);
+
+    // Write the CFG to the Graphviz file
+    WriteGraph(File, &F);
+  } else {
+    errs() << "Error writing CFG to file: " << EC.message() << "\n";
+  }
+
+
+  for (BasicBlock *BB : BlocksToInstrument) {
+    std::string BBName = BB->hasName() ? BB->getName().str() : "<anonymous>";
+    // Record BBName or other unique identifiers
+  }
+
+  std::string LogFilename = F.getName().str() + "_instrumented_blocks.txt";
+  std::ofstream LogFile(LogFilename);
+
+  if (LogFile.is_open()) {
+    for (BasicBlock *BB : BlocksToInstrument) {
+      std::string BBName = BB->hasName() ? BB->getName().str() : "<anonymous>";
+      LogFile << BBName << "\n";
+    }
+    LogFile.close();
+  } else {
+    llvm::errs() << "Error opening file to log instrumented blocks.\n";
   }
 
   if (debug) {
@@ -754,6 +827,8 @@ void ModuleSanitizerCoverageAFL::CreateFunctionLocalArrays(
 
 bool ModuleSanitizerCoverageAFL::InjectCoverage(
     Function &F, ArrayRef<BasicBlock *> AllBlocks, bool IsLeafFunc) {
+
+  // printf("SMDEBUG::ModuleSanitizerCoverageAFL::InjectCoverage\n");
 
   if (AllBlocks.empty()) return false;
 
