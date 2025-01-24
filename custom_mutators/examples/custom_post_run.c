@@ -290,7 +290,25 @@ void afl_custom_post_run(my_mutator_t *data) {
   }
 
   // update the record every 1 seconds
-  if (get_cur_time() - data->prev_record_time > 1000) { update_record(data); }
+  threshold = 1000;
+  if (time_so_far > 60000) {  // 1 minute
+    threshold = 10000;        // 10 seconds
+  }
+  if (time_so_far > 600000) {  // 10 minutes
+    threshold = 60000;         // 1 minute
+  }
+  if (time_so_far > 3600000) {  // 1 hour
+    threshold = 300000;         // 5 minutes
+  }
+  if (time_so_far > 21600000) {  // 6 hours
+    threshold = 600000;         // 10 minutes
+  }
+  if (time_so_far > 43200000) {  // 12 hours
+    threshold = 1800000;        // 30 minutes
+  }
+  if (get_cur_time() - data->prev_record_time > threshold) {
+    update_record(data); 
+  }
 
   return;
 }
