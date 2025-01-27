@@ -51,7 +51,7 @@ typedef struct my_mutator {
   setofset_t *sglt_clusts;
   u32         n_sglt_clusts;
   SimpleSet  *singletons;
-  u64         prev_record_time;
+  u64         last_record_add_time;
 
   record_t *records;
   u32       records_len;
@@ -59,7 +59,7 @@ typedef struct my_mutator {
   bool force_save;
   bool reset_after_tmin;
   u32  tmin;
-  u64  last_record_time;
+  u64  last_record_write_time;
 
 } my_mutator_t;
 
@@ -92,10 +92,10 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
   data->records = NULL;
   data->records_len = 0;
   data->force_save = false;
-  data->prev_record_time = 0;
+  data->last_record_add_time = get_cur_time();
   data->reset_after_tmin = true;
   data->tmin = 0;
-  data->last_record_time = get_cur_time();
+  data->last_record_write_time = get_cur_time();
 
   // check if the records file exists; if so, remove it
   char *filename = alloc_printf("%s/records.csv", afl->out_dir);
@@ -133,8 +133,8 @@ void reset_data(my_mutator_t *data) {
   data->records = NULL;
   data->records_len = 0;
   data->force_save = false;
-  data->prev_record_time = 0;
-  data->last_record_time = get_cur_time();
+  data->last_record_add_time = get_cur_time();
+  data->last_record_write_time = get_cur_time();
 }
 
 const char *idx_to_str(u32 idx) {
@@ -262,7 +262,7 @@ void afl_custom_post_run(my_mutator_t *data) {
     threshold = 21600000;        // 6 hours
   }
   if (add_new_record || data->force_save ||
-      get_cur_time() - data->last_record_time > threshold) {
+      get_cur_time() - data->last_record_add_time > threshold) {
     record_t *new_record = (record_t *)malloc(sizeof(record_t));
     new_record->time_ms = get_cur_time() - data->afl->start_time;
     if (!data->reset_after_tmin) { new_record->time_ms -= data->tmin; }
@@ -286,7 +286,7 @@ void afl_custom_post_run(my_mutator_t *data) {
     if (data->records) { data->records->next = new_record; }
     data->records = new_record;
     data->records_len++;
-    data->last_record_time = get_cur_time();
+    data->last_record_add_time = get_cur_time();
   }
 
   // update the record every 1 seconds
@@ -306,7 +306,7 @@ void afl_custom_post_run(my_mutator_t *data) {
   if (time_so_far > 43200000) {  // 12 hours
     threshold = 1800000;        // 30 minutes
   }
-  if (get_cur_time() - data->prev_record_time > threshold) {
+  if (get_cur_time() - data->last_record_write_time > threshold) {
     update_record(data); 
   }
 
@@ -337,6 +337,7 @@ void update_record(my_mutator_t *data) {
     cur = cur->next;
   }
   fclose(f);
+  data->last_record_write_time = get_cur_time();
   ck_free(filename);
 }
 
