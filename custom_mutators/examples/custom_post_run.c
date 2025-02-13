@@ -94,7 +94,7 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
   data->force_save = false;
   data->last_record_add_time = get_cur_time();
   data->reset_after_tmin = true;
-  data->tmin = 0;
+  data->tmin = 600000;
   data->last_record_write_time = get_cur_time();
 
   // check if the records file exists; if so, remove it
