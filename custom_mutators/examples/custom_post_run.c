@@ -31,6 +31,9 @@ typedef struct record {
   long unsigned int      n_covered_reset;
   long unsigned int      n_sglt_clusts_reset;
   long unsigned int      n_singletons_reset;
+  // mean local estimator
+  double                 n_ml_sglt;
+  double                 n_ml_sglt_clusts;
 
   // for ground truth computation
   SimpleSet             *covered;
@@ -57,12 +60,25 @@ typedef struct covmanager {
   SimpleSet  *singletons;
 } covmanager_t;
 
+// queue_entry is defined in afl-fuzz.h
+typedef struct queue_entry queue_entry_t;
+
+typedef struct item2manager {
+  queue_entry_t **queue_list;
+  covmanager_t  **covman_list;
+  u32 n_items;
+} item2manager_t;
+
 typedef struct my_mutator {
   afl_state_t *afl;
 
+  // blackbox estimator
   covmanager_t *covman_total;
+  // reset estimator
   covmanager_t *covman_reset;
   u32           n_prev_seeds;
+  // mean local estimator
+  item2manager_t         *item2man;
 
   record_t *records;
   u32       records_len;
@@ -124,6 +140,32 @@ void destroy_covmanager(covmanager_t *covman) {
   free(covman);
 }
 
+covmanager_t *get_covmanager(item2manager_t *item2man, queue_entry_t *q) {
+  // check if item
+  for (u32 i = 0; i < item2man->n_items; ++i) {
+    if (item2man->queue_list[i] == q) {
+      return item2man->covman_list[i];
+    }
+  }
+  return NULL;
+}
+
+void add_item2manager(item2manager_t *item2man, queue_entry_t *q) {
+  item2man->queue_list = (queue_entry_t **)realloc(
+    item2man->queue_list, (item2man->n_items + 1) * sizeof(queue_entry_t *)
+  );
+  if (item2man->covman_list == NULL) {
+    item2man->covman_list = (covmanager_t **)malloc(sizeof(covmanager_t *));
+  } else {
+    item2man->covman_list = (covmanager_t **)realloc(
+      item2man->covman_list, (item2man->n_items + 1) * sizeof(covmanager_t *)
+    );
+  }
+  item2man->queue_list[item2man->n_items] = q;
+  item2man->covman_list[item2man->n_items] = covmanager_init();
+  item2man->n_items++;
+}
+
 my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
   my_mutator_t *data = calloc(1, sizeof(my_mutator_t));
   if (!data) {
@@ -136,6 +178,11 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
   data->covman_total = covmanager_init();
   data->covman_reset = covmanager_init();
   data->n_prev_seeds = afl->queued_items;
+
+  data->item2man = (item2manager_t *)malloc(sizeof(item2manager_t));
+  data->item2man->n_items = 0;
+  data->item2man->queue_list = NULL;
+  data->item2man->covman_list = NULL;
   
   data->records = NULL;
   data->records_len = 0;
@@ -146,7 +193,7 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
   data->last_record_write_time = get_cur_time();
 
   // check if the records file exists; if so, remove it
-  char *filename = alloc_printf("%s/records.csv", afl->out_dir);
+  char *filename = (char *) alloc_printf("%s/records.csv", afl->out_dir);
   if (access(filename, F_OK) == 0) {
     if (remove(filename) == 0) {
       printf("Removed the existing records file\n");
@@ -163,6 +210,14 @@ void reset_entire_data(my_mutator_t *data) {
   destroy_covmanager(data->covman_reset);
   data->covman_total = covmanager_init();
   data->covman_reset = covmanager_init();
+  data->n_prev_seeds = data->afl->queued_items;
+
+  for (u32 i = 0; i < data->item2man->n_items; ++i) {
+    destroy_covmanager(data->item2man->covman_list[i]);
+  }
+  data->item2man->n_items = 0;
+  data->item2man->queue_list = NULL;
+  data->item2man->covman_list = NULL;
 
   data->records = NULL;
   data->records_len = 0;
@@ -178,7 +233,7 @@ const char *idx_to_str(u32 idx) {
 }
 
 bool update_covmanager(
-  covmanager_t *covman, char *key, SimpleSet *new_sglt_clust
+  covmanager_t *covman, const char *key, SimpleSet *new_sglt_clust
 ) {
   bool add_new_record = false;
   if (set_contains(covman->covered_prev, key) == SET_FALSE) {
@@ -242,6 +297,47 @@ void update_singleton_clusters(covmanager_t *covman, SimpleSet *new_sglt_clust) 
   }
 }
 
+double compute_local_estimator(covmanager_t *covman, bool is_cluster) {
+  double estimate = 0.0;
+  if (covman->n_execs == 0) { estimate = 1.0; }
+  else if (covman->n_sglt_clusts == 0) {
+    estimate = 1.0 / ((double)covman->n_execs + 2.0);
+  } else {
+    if (is_cluster)
+      estimate = (double)covman->n_sglt_clusts / (double)covman->n_execs;
+    else
+      estimate = (double)set_length(covman->singletons) / (double)covman->n_execs;
+  }
+  return estimate;
+}
+
+double compute_mean_local_estimator(item2manager_t *item2man, bool is_cluster) {
+  // weighted average of the local estimators
+  // 1. get list of weights
+  double *weights = (double *)malloc(item2man->n_items * sizeof(double));
+  for (u32 i = 0; i < item2man->n_items; ++i) {
+    weights[i] = item2man->queue_list[i]->weight;
+  }
+  // 2. normalize the weights
+  double sum = 0;
+  for (u32 i = 0; i < item2man->n_items; ++i) {
+    sum += weights[i];
+  }
+  for (u32 i = 0; i < item2man->n_items; ++i) {
+    weights[i] /= sum;
+  }
+  // 3. compute the mean local estimator
+  double mean_local_estimator = 0;
+  for (u32 i = 0; i < item2man->n_items; ++i) {
+    mean_local_estimator += weights[i] * compute_local_estimator(
+      item2man->covman_list[i], is_cluster);
+  }
+  free(weights);
+  return mean_local_estimator;
+}
+
+void update_record(my_mutator_t *data);
+
 void afl_custom_post_run(my_mutator_t *data) {
   // printf("|C%d", data->afl->record_sampling);
   if (data->reset_after_tmin &&
@@ -266,10 +362,21 @@ void afl_custom_post_run(my_mutator_t *data) {
     reset_covmanager(data->covman_reset);
   }
 
+  // find the covemanager for the current item
+  queue_entry_t *queue_cur = data->afl->queue_cur;
+  covmanager_t *covman_curr = get_covmanager(data->item2man, queue_cur);
+  if (!covman_curr) {
+    add_item2manager(data->item2man, queue_cur);
+    covman_curr = get_covmanager(data->item2man, queue_cur);
+  }
+  covman_curr->n_execs++;
+
   SimpleSet *new_sglt_clust_total = (SimpleSet *)malloc(sizeof(SimpleSet));
   set_init(new_sglt_clust_total);
   SimpleSet *new_sglt_clust_reset = (SimpleSet *)malloc(sizeof(SimpleSet));
   set_init(new_sglt_clust_reset);
+  SimpleSet *new_sglt_clust_curr = (SimpleSet *)malloc(sizeof(SimpleSet));
+  set_init(new_sglt_clust_curr);
 
   // flag up the check_new for all records. this recording for the missing mass
   // analysis only done until the number of executions is doubled.
@@ -303,11 +410,14 @@ void afl_custom_post_run(my_mutator_t *data) {
         data->covman_total, key, new_sglt_clust_total) || add_new_record;
       add_new_record = update_covmanager(
         data->covman_reset, key, new_sglt_clust_reset) || add_new_record;
+      add_new_record = update_covmanager(
+        covman_curr, key, new_sglt_clust_curr) || add_new_record;
     }
   }
   // if there is new singleton cluster, add it to sglt_clusts
   update_singleton_clusters(data->covman_total, new_sglt_clust_total);
   update_singleton_clusters(data->covman_reset, new_sglt_clust_reset);
+  update_singleton_clusters(covman_curr, new_sglt_clust_curr);
 
   // if the singleton status has changed, add a new record
   // otherwise, if it has been 10 minutes since the last record or the
@@ -341,6 +451,12 @@ void afl_custom_post_run(my_mutator_t *data) {
     new_record->n_covered_reset = set_length(data->covman_reset->covered_prev);
     new_record->n_sglt_clusts_reset = data->covman_reset->n_sglt_clusts;
     new_record->n_singletons_reset = set_length(data->covman_reset->singletons);
+
+    new_record->n_ml_sglt = compute_mean_local_estimator(data->item2man, false);
+    new_record->n_ml_sglt_clusts = compute_mean_local_estimator(data->item2man, true);
+    // scale it to the number of executions to compare with the number of singletons
+    new_record->n_ml_sglt *= new_record->execs;
+    new_record->n_ml_sglt_clusts *= new_record->execs;
     
     SimpleSet *covered_so_far = (SimpleSet *)malloc(sizeof(SimpleSet));
     set_init(covered_so_far);
@@ -388,7 +504,7 @@ void afl_custom_post_run(my_mutator_t *data) {
 
 void update_record(my_mutator_t *data) {
   // filename: afl->out_dir/records.csv
-  char *filename = alloc_printf("%s/records.csv", data->afl->out_dir);
+  char *filename = (char *) alloc_printf("%s/records.csv", data->afl->out_dir);
   FILE *f = fopen(filename, "w");
   if (!f) {
     perror("fopen");
@@ -398,6 +514,7 @@ void update_record(my_mutator_t *data) {
           "time, #execs, #seeds, "
           "#covered, #singletons, #sglt_clusts, "
           "#coveredR, #singletonsR, #sglt_clustsR, "
+          "ML_sglt, ML_sglt_clusts, "
           "#foundnew, done, update?\n");
   record_t *cur = data->records;
   // find the first record
@@ -408,10 +525,12 @@ void update_record(my_mutator_t *data) {
     fprintf(f, "%llu, %llu, %u, "
             "%lu, %lu, %lu, "
             "%lu, %lu, %lu, "
+            "%f, %f, "
             "%llu, %s, %s\n", 
             cur->time_ms, cur->execs, cur->n_seeds,
             cur->n_covered_total, cur->n_singletons_total, cur->n_sglt_clusts_total,
             cur->n_covered_reset, cur->n_singletons_reset, cur->n_sglt_clusts_reset,
+            cur->n_ml_sglt, cur->n_ml_sglt_clusts,
             cur->n_found_new, cur->execs * 2 < data->covman_total->n_execs ? "true" : "false",
             cur->is_update ? "true" : "false");
     cur = cur->next;
@@ -444,6 +563,13 @@ void afl_custom_deinit(my_mutator_t *data) {
   destroy_covmanager(data->covman_reset);
   free(data->covman_total);
   free(data->covman_reset);
+
+  for (u32 i = 0; i < data->item2man->n_items; ++i) {
+    destroy_covmanager(data->item2man->covman_list[i]);
+  }
+  free(data->item2man->queue_list);
+  free(data->item2man->covman_list);
+  free(data->item2man);
 
   free(data);
 }
