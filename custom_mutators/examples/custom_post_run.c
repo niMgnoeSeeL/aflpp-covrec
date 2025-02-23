@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <math.h>
 #include "set.h"
 
 typedef struct record {
@@ -64,7 +65,7 @@ typedef struct covmanager {
 typedef struct queue_entry queue_entry_t;
 
 typedef struct item2manager {
-  queue_entry_t **queue_list;
+  u32           *id_list;
   covmanager_t  **covman_list;
   u32 n_items;
 } item2manager_t;
@@ -140,20 +141,28 @@ void destroy_covmanager(covmanager_t *covman) {
   free(covman);
 }
 
-covmanager_t *get_covmanager(item2manager_t *item2man, queue_entry_t *q) {
+// iterate over the queue and find the queue_entry_t with the given id
+queue_entry_t *get_queue_entry(afl_state_t *afl, u32 id) {
+  queue_entry_t *q = afl->queue_buf[id];
+  // assert q->id == id
+  if (q->id != id) {
+    FATAL("Error: queue_entry_t id does not match the given id");
+  }
+  return q;
+}
+
+covmanager_t *get_covmanager(item2manager_t *item2man, u32 id) {
   // check if item
   for (u32 i = 0; i < item2man->n_items; ++i) {
-    if (item2man->queue_list[i] == q) {
+    if (item2man->id_list[i] == id) {
       return item2man->covman_list[i];
     }
   }
   return NULL;
 }
 
-void add_item2manager(item2manager_t *item2man, queue_entry_t *q) {
-  item2man->queue_list = (queue_entry_t **)realloc(
-    item2man->queue_list, (item2man->n_items + 1) * sizeof(queue_entry_t *)
-  );
+void add_item2manager(item2manager_t *item2man, u32 id) {
+  item2man->id_list = (u32 *)realloc(item2man->id_list, (item2man->n_items + 1) * sizeof(u32));
   if (item2man->covman_list == NULL) {
     item2man->covman_list = (covmanager_t **)malloc(sizeof(covmanager_t *));
   } else {
@@ -161,7 +170,7 @@ void add_item2manager(item2manager_t *item2man, queue_entry_t *q) {
       item2man->covman_list, (item2man->n_items + 1) * sizeof(covmanager_t *)
     );
   }
-  item2man->queue_list[item2man->n_items] = q;
+  item2man->id_list[item2man->n_items] = id;
   item2man->covman_list[item2man->n_items] = covmanager_init();
   item2man->n_items++;
 }
@@ -181,7 +190,7 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
 
   data->item2man = (item2manager_t *)malloc(sizeof(item2manager_t));
   data->item2man->n_items = 0;
-  data->item2man->queue_list = NULL;
+  data->item2man->id_list = NULL;
   data->item2man->covman_list = NULL;
   
   data->records = NULL;
@@ -216,7 +225,7 @@ void reset_entire_data(my_mutator_t *data) {
     destroy_covmanager(data->item2man->covman_list[i]);
   }
   data->item2man->n_items = 0;
-  data->item2man->queue_list = NULL;
+  data->item2man->id_list = NULL;
   data->item2man->covman_list = NULL;
 
   data->records = NULL;
@@ -273,8 +282,10 @@ bool update_covmanager(
           cur = cur->next;
           // if cur is NULL, something is wrong
           if (!cur) {
-            FATAL("Error: key %s is in singletons but not in sglt_clusts",
-                  key);
+            // FATAL("Error: key %s is in singletons but not in sglt_clusts",
+            //       key);
+            printf("Warning: key %s is in singletons but not in sglt_clusts\n",
+                   key);
           }
         }
       }
@@ -297,6 +308,74 @@ void update_singleton_clusters(covmanager_t *covman, SimpleSet *new_sglt_clust) 
   }
 }
 
+void compute_alias_weights(double *alias_probability, u32 *alias_table, u32 N, double *weight) {
+  // check if alias_probability and alias_table are valid
+  if (alias_probability == NULL || alias_table == NULL) {
+    // return equal weights
+    for (u32 i = 0; i < N; i++) {
+      weight[i] = 1.0 / N;
+    }
+    return;
+  }
+  // sometimes alias_probability has weird values
+  double *_alias_probability = (double *)malloc(N * sizeof(double));
+  for (u32 i = 0; i < N; i++) {
+    if (alias_probability[i] < 0.0 || alias_probability[i] > 1.0) {
+      _alias_probability[i] = 0.0;
+    } else {
+      _alias_probability[i] = alias_probability[i];
+    }
+  }
+  // sometimes alias_table has weird values
+  u32 *_alias_table = (u32 *)malloc(N * sizeof(u32));
+  for (u32 i = 0; i < N; i++) {
+    if (alias_table[i] < 0 || alias_table[i] >= N) {
+      _alias_table[i] = 0;
+    } else {
+      _alias_table[i] = alias_table[i];
+    }
+  }
+  // Initialize weight array to 0
+  for (u32 i = 0; i < N; i++) {
+      weight[i] = 0.0;
+  }
+  // Compute the probability for each item
+  for (u32 i = 0; i < N; i++) {
+    // Direct probability contribution
+    weight[i] += _alias_probability[i] / N;
+
+    // Indirect probability contribution
+    if (_alias_table[i] < N) { // Ensure _alias_table[i] is a valid index
+      weight[_alias_table[i]] += (1.0 - _alias_probability[i]) / N;
+    }
+  }
+  // Verify that the sum of weights is approximately 1
+  double sum = 0.0;
+  for (u32 i = 0; i < N; i++) {
+    sum += weight[i];
+  }
+  // assert(fabs(sum - 1.0) < 1e-6);
+  if (fabs(sum - 1.0) >= 0.2) {
+    // for debugging purpose
+    // print the _alias_probability
+    for (u32 i = 0; i < N; i++) {
+      printf("SMDEBUG::compute_alias_weights::_alias_probability[%d] = %f\n", i, _alias_probability[i]);
+    }
+    // print the _alias_table
+    for (u32 i = 0; i < N; i++) {
+      printf("SMDEBUG::compute_alias_weights::_alias_table[%d] = %d\n", i, _alias_table[i]);
+    }
+    // print the weights
+    for (u32 i = 0; i < N; i++) {
+      printf("SMDEBUG::compute_alias_weights::weight[%d] = %f\n", i, weight[i]);
+    }
+    // print the sum
+    printf("SMDEBUG::compute_alias_weights::sum = %f\n", sum);
+    FATAL("Error: sum of weights is not 1.0");
+  }
+}
+
+
 double compute_local_estimator(covmanager_t *covman, bool is_cluster) {
   double estimate = 0.0;
   if (covman->n_execs == 0) { estimate = 1.0; }
@@ -311,35 +390,46 @@ double compute_local_estimator(covmanager_t *covman, bool is_cluster) {
   return estimate;
 }
 
-double compute_mean_local_estimator(item2manager_t *item2man, bool is_cluster) {
+double compute_mean_local_estimator(my_mutator_t *data, double *weight, bool is_cluster) {
   // weighted average of the local estimators
-  // 1. get list of weights
-  double *weights = (double *)malloc(item2man->n_items * sizeof(double));
-  for (u32 i = 0; i < item2man->n_items; ++i) {
-    weights[i] = item2man->queue_list[i]->weight;
-  }
-  // 2. normalize the weights
-  double sum = 0;
-  for (u32 i = 0; i < item2man->n_items; ++i) {
-    sum += weights[i];
-  }
-  for (u32 i = 0; i < item2man->n_items; ++i) {
-    weights[i] /= sum;
-  }
+  item2manager_t *item2man = data->item2man;
+  // // 1. get list of weights
+  // double *weights = (double *)malloc(item2man->n_items * sizeof(double));
+  // for (u32 i = 0; i < item2man->n_items; ++i) {
+  //   u32 id = item2man->id_list[i];
+  //   queue_entry_t *q = get_queue_entry(data->afl, id);
+  //   weights[i] = q->weight;
+  // }
+  // // 2. normalize the weights
+  // double sum = 0;
+  // for (u32 i = 0; i < item2man->n_items; ++i) {
+  //   sum += weights[i];
+  // }
+  // for (u32 i = 0; i < item2man->n_items; ++i) {
+  //   weights[i] /= sum;
+  // }
   // 3. compute the mean local estimator
   double mean_local_estimator = 0;
-  for (u32 i = 0; i < item2man->n_items; ++i) {
-    mean_local_estimator += weights[i] * compute_local_estimator(
-      item2man->covman_list[i], is_cluster);
+  // N = length of weight
+  u32 N = data->afl->queued_items;
+  for (u32 i = 0; i < N; ++i) {
+    if (i < item2man->n_items) {
+      u32 id = item2man->id_list[i];
+      covmanager_t *covman = get_covmanager(item2man, id);
+      mean_local_estimator += weight[id] * compute_local_estimator(covman, is_cluster);
+    } else {
+      mean_local_estimator += weight[i] * 1.0;
+    }
+  //   mean_local_estimator += weight[i] * compute_local_estimator(
+  //     item2man->covman_list[i], is_cluster);
   }
-  free(weights);
+  // free(weights);
   return mean_local_estimator;
 }
 
-void update_record(my_mutator_t *data);
+void update_record(my_mutator_t *data, double *weight);
 
 void afl_custom_post_run(my_mutator_t *data) {
-  // printf("|C%d", data->afl->record_sampling);
   if (data->reset_after_tmin &&
       get_cur_time() - data->afl->start_time > data->tmin) {
     reset_entire_data(data);
@@ -347,7 +437,6 @@ void afl_custom_post_run(my_mutator_t *data) {
   }
 
   if (!data->afl->record_sampling) { return; }
-  // printf("|R%d", data->afl->record_sampling);
   data->afl->record_sampling = false;
   data->covman_total->n_execs++;
   data->covman_reset->n_execs = data->covman_total->n_execs;
@@ -364,10 +453,16 @@ void afl_custom_post_run(my_mutator_t *data) {
 
   // find the covemanager for the current item
   queue_entry_t *queue_cur = data->afl->queue_cur;
-  covmanager_t *covman_curr = get_covmanager(data->item2man, queue_cur);
+  // check if the mother is NULL, then mid = queue_cur->id
+  // otherwise, mid = queue_cur->mother->id
+  u32 mid = queue_cur->id;
+  if (queue_cur->mother) {
+    mid = queue_cur->mother->id;
+  }
+  covmanager_t *covman_curr = get_covmanager(data->item2man, mid);
   if (!covman_curr) {
-    add_item2manager(data->item2man, queue_cur);
-    covman_curr = get_covmanager(data->item2man, queue_cur);
+    add_item2manager(data->item2man, mid);
+    covman_curr = get_covmanager(data->item2man, mid);
   }
   covman_curr->n_execs++;
 
@@ -436,6 +531,10 @@ void afl_custom_post_run(my_mutator_t *data) {
   if (time_so_far > 43200000) {  // 12 hours
     threshold = 21600000;        // 6 hours
   }
+
+  u32 N = data->afl->queued_items;
+  double *weight = (double *)malloc(N * sizeof(double));
+  compute_alias_weights(data->afl->alias_probability, data->afl->alias_table, N, weight);
   if (add_new_record || data->force_save ||
       get_cur_time() - data->last_record_add_time > threshold) {
     record_t *new_record = (record_t *)malloc(sizeof(record_t));
@@ -452,8 +551,8 @@ void afl_custom_post_run(my_mutator_t *data) {
     new_record->n_sglt_clusts_reset = data->covman_reset->n_sglt_clusts;
     new_record->n_singletons_reset = set_length(data->covman_reset->singletons);
 
-    new_record->n_ml_sglt = compute_mean_local_estimator(data->item2man, false);
-    new_record->n_ml_sglt_clusts = compute_mean_local_estimator(data->item2man, true);
+    new_record->n_ml_sglt = compute_mean_local_estimator(data, weight, false);
+    new_record->n_ml_sglt_clusts = compute_mean_local_estimator(data, weight, true);
     // scale it to the number of executions to compare with the number of singletons
     new_record->n_ml_sglt *= new_record->execs;
     new_record->n_ml_sglt_clusts *= new_record->execs;
@@ -496,13 +595,14 @@ void afl_custom_post_run(my_mutator_t *data) {
     threshold = 1800000;        // 30 minutes
   }
   if (get_cur_time() - data->last_record_write_time > threshold) {
-    update_record(data); 
+    update_record(data, weight); 
   }
 
+  free(weight);
   return;
 }
 
-void update_record(my_mutator_t *data) {
+void update_record(my_mutator_t *data, double *weight) {
   // filename: afl->out_dir/records.csv
   char *filename = (char *) alloc_printf("%s/records.csv", data->afl->out_dir);
   FILE *f = fopen(filename, "w");
@@ -536,6 +636,42 @@ void update_record(my_mutator_t *data) {
     cur = cur->next;
   }
   fclose(f);
+
+  // record the covmanagers for each item under the directory local_records
+  char *dir = (char *) alloc_printf("%s/local_records", data->afl->out_dir);
+  if (access(dir, F_OK) != 0) {
+    if (mkdir(dir, 0777) != 0) {
+      perror("mkdir");
+      return;
+    }
+  }
+  // keep appending the records to the file
+  for (u32 i = 0; i < data->item2man->n_items; ++i) {
+    u32 id = data->item2man->id_list[i];
+    covmanager_t *covman = data->item2man->covman_list[i];
+    // double weight = get_queue_entry(data->afl, id)->weight;
+    char *filename = (char *) alloc_printf("%s/records_%06u.csv", dir, id);
+    FILE *f;
+    // check if the file exists
+    if (access(filename, F_OK) == 0) {
+      f = fopen(filename, "a");
+    } else {
+      f = fopen(filename, "w");
+      fprintf(f, "time, #total_execs, weight, #execs, #covered, #singletons, #sglt_clusts\n");
+    }
+    if (!f) {
+      // raise an error
+      exit(1);
+    }
+    fprintf(f, "%llu, %u, %f, %u, %lu, %lu, %u\n",
+            get_cur_time() - data->afl->start_time, data->covman_total->n_execs,
+            weight[id], covman->n_execs,
+            set_length(covman->covered_prev), set_length(covman->singletons),
+            covman->n_sglt_clusts);
+    fclose(f);
+    ck_free(filename);
+  }
+
   data->last_record_write_time = get_cur_time();
   ck_free(filename);
 }
@@ -547,7 +683,11 @@ void afl_custom_end_job(my_mutator_t *data) {
   afl_custom_post_run(data);
 
   // update the record
-  update_record(data);
+  u32 N = data->afl->queued_items;
+  double *weight = (double *)malloc(N * sizeof(double));
+  compute_alias_weights(data->afl->alias_probability, data->afl->alias_table, N, weight);
+  update_record(data, weight);
+  free(weight);
   return;
 }
 
@@ -567,7 +707,7 @@ void afl_custom_deinit(my_mutator_t *data) {
   for (u32 i = 0; i < data->item2man->n_items; ++i) {
     destroy_covmanager(data->item2man->covman_list[i]);
   }
-  free(data->item2man->queue_list);
+  free(data->item2man->id_list);
   free(data->item2man->covman_list);
   free(data->item2man);
 
