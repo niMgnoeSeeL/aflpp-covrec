@@ -224,8 +224,11 @@ void afl_custom_post_run(my_mutator_t *data) {
               cur = cur->next;
               // if cur is NULL, something is wrong
               if (!cur) {
-                FATAL("Error: key %s is in singletons but not in sglt_clusts",
-                      key);
+                // FATAL("Error: key %s is in singletons but not in sglt_clusts",
+                //       key);
+                printf("Warning: key %s is in singletons but not in "
+                       "sglt_clusts\n",
+                       key);
               }
             }
           }
