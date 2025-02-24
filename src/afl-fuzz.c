@@ -3107,7 +3107,9 @@ int main(int argc, char **argv_orig, char **envp) {
 
       if (likely(!afl->old_seed_selection)) {
 
-        if (likely(afl->pending_favored && afl->smallest_favored >= 0)) {
+        // if (likely(afl->pending_favored && afl->smallest_favored >= 0)) {
+        // force to use the alias table
+        if (false) {
 
           afl->current_entry = afl->smallest_favored;
 
@@ -3157,8 +3159,7 @@ int main(int argc, char **argv_orig, char **envp) {
       }
       // DEBUG:: when we turn INGORE_FINDS on, it stops fuzzing. Check
       // where it stops.
-      // printf("DEBUG::main::before fuzz_one(afl)::afl->queue_cur->fname=%s\n",
-      //        afl->queue_cur->fname);
+      // printf("DEBUG::main::before fuzz_one(afl)::afl->queue_cur->id=%llu\n", afl->queue_cur->id);
       skipped_fuzz = fuzz_one(afl);
   #ifdef INTROSPECTION
       ++afl->queue_cur->stats_selected;

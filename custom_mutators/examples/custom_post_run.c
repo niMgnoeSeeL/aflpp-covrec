@@ -35,6 +35,13 @@ typedef struct record {
   // mean local estimator
   double                 n_ml_sglt;
   double                 n_ml_sglt_clusts;
+  u32                    n_items;
+  double                 remain_weight;
+  double                 lesti_min;
+  double                 lesti_mean;
+  double                 lesti_max;
+  u32                    lesti_min_id;
+  u32                    lesti_max_id;
 
   // for ground truth computation
   SimpleSet             *covered;
@@ -91,6 +98,16 @@ typedef struct my_mutator {
   u64  last_record_write_time;
 
 } my_mutator_t;
+
+typedef struct ml_stat {
+  double esti;
+  double remain_weight;
+  double lesti_min;
+  double lesti_mean;
+  double lesti_max;
+  u32 lesti_min_id;
+  u32 lesti_max_id;
+} ml_stat_t;
 
 inline u64 get_cur_time(void) {
   struct timeval  tv;
@@ -390,41 +407,52 @@ double compute_local_estimator(covmanager_t *covman, bool is_cluster) {
   return estimate;
 }
 
-double compute_mean_local_estimator(my_mutator_t *data, double *weight, bool is_cluster) {
-  // weighted average of the local estimators
+ml_stat_t *compute_mean_local_estimator(my_mutator_t *data, double *weight, 
+                                    bool is_cluster) {
   item2manager_t *item2man = data->item2man;
-  // // 1. get list of weights
-  // double *weights = (double *)malloc(item2man->n_items * sizeof(double));
-  // for (u32 i = 0; i < item2man->n_items; ++i) {
-  //   u32 id = item2man->id_list[i];
-  //   queue_entry_t *q = get_queue_entry(data->afl, id);
-  //   weights[i] = q->weight;
-  // }
-  // // 2. normalize the weights
-  // double sum = 0;
-  // for (u32 i = 0; i < item2man->n_items; ++i) {
-  //   sum += weights[i];
-  // }
-  // for (u32 i = 0; i < item2man->n_items; ++i) {
-  //   weights[i] /= sum;
-  // }
-  // 3. compute the mean local estimator
   double mean_local_estimator = 0;
-  // N = length of weight
-  u32 N = data->afl->queued_items;
-  for (u32 i = 0; i < N; ++i) {
-    if (i < item2man->n_items) {
-      u32 id = item2man->id_list[i];
-      covmanager_t *covman = get_covmanager(item2man, id);
-      mean_local_estimator += weight[id] * compute_local_estimator(covman, is_cluster);
-    } else {
-      mean_local_estimator += weight[i] * 1.0;
+  double lesti_max = 0.0, lesti_mean = 0.0, lesti_min = 1.0;
+  u32 lesti_max_id = 0, lesti_min_id = 0;
+  double remain_weight = 1.0;
+  for (u32 i = 0; i < item2man->n_items; ++i) {
+    u32 id = item2man->id_list[i];
+    covmanager_t *covman = get_covmanager(item2man, id);
+    double local_estimator = compute_local_estimator(covman, is_cluster);
+    mean_local_estimator += weight[id] * local_estimator;
+    
+    // stats
+    if (is_cluster) {
+      if (local_estimator > lesti_max) {
+        lesti_max = local_estimator;
+        lesti_max_id = id;
+      }
+      if (local_estimator < lesti_min) {
+        lesti_min = local_estimator;
+        lesti_min_id = id;
+      }
+      lesti_mean += local_estimator;
     }
-  //   mean_local_estimator += weight[i] * compute_local_estimator(
-  //     item2man->covman_list[i], is_cluster);
+    remain_weight -= weight[id];
   }
-  // free(weights);
-  return mean_local_estimator;
+  if (is_cluster)
+    lesti_mean /= item2man->n_items;
+
+  // for seeds that are not items, we assume the local estimator is 0.5
+  // same as the case where there is no singletons.
+  mean_local_estimator += remain_weight * 0.5;
+
+  ml_stat_t *ml_stat = (ml_stat_t *)malloc(sizeof(ml_stat_t));
+  ml_stat->esti = mean_local_estimator;
+  if (is_cluster) {
+    ml_stat->remain_weight = remain_weight;
+    ml_stat->lesti_min = lesti_min;
+    ml_stat->lesti_mean = lesti_mean;
+    ml_stat->lesti_max = lesti_max;
+    ml_stat->lesti_min_id = lesti_min_id;
+    ml_stat->lesti_max_id = lesti_max_id;
+  }
+
+  return ml_stat;
 }
 
 void update_record(my_mutator_t *data, double *weight);
@@ -551,11 +579,24 @@ void afl_custom_post_run(my_mutator_t *data) {
     new_record->n_sglt_clusts_reset = data->covman_reset->n_sglt_clusts;
     new_record->n_singletons_reset = set_length(data->covman_reset->singletons);
 
-    new_record->n_ml_sglt = compute_mean_local_estimator(data, weight, false);
-    new_record->n_ml_sglt_clusts = compute_mean_local_estimator(data, weight, true);
-    // scale it to the number of executions to compare with the number of singletons
+    new_record->n_ml_sglt = compute_mean_local_estimator(data, weight, false)->esti;
+    // scale it to the number of executions to compare with others
+    // (e.g., # singletons)
     new_record->n_ml_sglt *= new_record->execs;
+
+    ml_stat_t *ml_stat = compute_mean_local_estimator(data, weight, true);
+    new_record->n_ml_sglt_clusts = ml_stat->esti;
+    // scale it to the number of executions to compare with others
+    // (e.g., # singletons)
     new_record->n_ml_sglt_clusts *= new_record->execs;
+    new_record->remain_weight = ml_stat->remain_weight;
+    new_record->lesti_min = ml_stat->lesti_min;
+    new_record->lesti_mean = ml_stat->lesti_mean;
+    new_record->lesti_max = ml_stat->lesti_max;
+    new_record->lesti_min_id = ml_stat->lesti_min_id;
+    new_record->lesti_max_id = ml_stat->lesti_max_id;
+
+    new_record->n_items = data->item2man->n_items;
     
     SimpleSet *covered_so_far = (SimpleSet *)malloc(sizeof(SimpleSet));
     set_init(covered_so_far);
@@ -611,10 +652,11 @@ void update_record(my_mutator_t *data, double *weight) {
     return;
   }
   fprintf(f,
-          "time, #execs, #seeds, "
+          "time, #execs, #seeds, #items, "
           "#covered, #singletons, #sglt_clusts, "
           "#coveredR, #singletonsR, #sglt_clustsR, "
           "ML_sglt, ML_sglt_clusts, "
+          "remainW, lesti_mean, lesti_min, lesti_min_id, lesti_max, lesti_max_id, "
           "#foundnew, done, update?\n");
   record_t *cur = data->records;
   // find the first record
@@ -622,15 +664,18 @@ void update_record(my_mutator_t *data, double *weight) {
     cur = cur->prev;
   }
   while (cur) {
-    fprintf(f, "%llu, %llu, %u, "
+    fprintf(f, "%llu, %llu, %u, %u, "
             "%lu, %lu, %lu, "
             "%lu, %lu, %lu, "
             "%f, %f, "
+            "%f, %f, %f, %u, %f, %u, "
             "%llu, %s, %s\n", 
-            cur->time_ms, cur->execs, cur->n_seeds,
+            cur->time_ms, cur->execs, cur->n_seeds, cur->n_items,
             cur->n_covered_total, cur->n_singletons_total, cur->n_sglt_clusts_total,
             cur->n_covered_reset, cur->n_singletons_reset, cur->n_sglt_clusts_reset,
             cur->n_ml_sglt, cur->n_ml_sglt_clusts,
+            cur->remain_weight, cur->lesti_mean, cur->lesti_min, cur->lesti_min_id,
+            cur->lesti_max, cur->lesti_max_id,
             cur->n_found_new, cur->execs * 2 < data->covman_total->n_execs ? "true" : "false",
             cur->is_update ? "true" : "false");
     cur = cur->next;
