@@ -681,44 +681,44 @@ void update_record(my_mutator_t *data, double *weight) {
     cur = cur->next;
   }
   fclose(f);
+  ck_free(filename);
 
-  // record the covmanagers for each item under the directory local_records
-  char *dir = (char *) alloc_printf("%s/local_records", data->afl->out_dir);
-  if (access(dir, F_OK) != 0) {
-    if (mkdir(dir, 0777) != 0) {
-      perror("mkdir");
-      return;
-    }
-  }
-  // keep appending the records to the file
-  for (u32 i = 0; i < data->item2man->n_items; ++i) {
-    u32 id = data->item2man->id_list[i];
-    covmanager_t *covman = data->item2man->covman_list[i];
-    // double weight = get_queue_entry(data->afl, id)->weight;
-    char *filename = (char *) alloc_printf("%s/records_%06u.csv", dir, id);
-    FILE *f;
-    // check if the file exists
-    if (access(filename, F_OK) == 0) {
-      f = fopen(filename, "a");
-    } else {
-      f = fopen(filename, "w");
-      fprintf(f, "time, #total_execs, weight, #execs, #covered, #singletons, #sglt_clusts\n");
-    }
-    if (!f) {
-      // raise an error
-      exit(1);
-    }
-    fprintf(f, "%llu, %u, %f, %u, %lu, %lu, %u\n",
-            get_cur_time() - data->afl->start_time, data->covman_total->n_execs,
-            weight[id], covman->n_execs,
-            set_length(covman->covered_prev), set_length(covman->singletons),
-            covman->n_sglt_clusts);
-    fclose(f);
-    ck_free(filename);
-  }
+  // // record the covmanagers for each item under the directory local_records
+  // char *dir = (char *) alloc_printf("%s/local_records", data->afl->out_dir);
+  // if (access(dir, F_OK) != 0) {
+  //   if (mkdir(dir, 0777) != 0) {
+  //     perror("mkdir");
+  //     return;
+  //   }
+  // }
+  // // keep appending the records to the file
+  // for (u32 i = 0; i < data->item2man->n_items; ++i) {
+  //   u32 id = data->item2man->id_list[i];
+  //   covmanager_t *covman = data->item2man->covman_list[i];
+  //   // double weight = get_queue_entry(data->afl, id)->weight;
+  //   char *filename = (char *) alloc_printf("%s/records_%06u.csv", dir, id);
+  //   FILE *f;
+  //   // check if the file exists
+  //   if (access(filename, F_OK) == 0) {
+  //     f = fopen(filename, "a");
+  //   } else {
+  //     f = fopen(filename, "w");
+  //     fprintf(f, "time, #total_execs, weight, #execs, #covered, #singletons, #sglt_clusts\n");
+  //   }
+  //   if (!f) {
+  //     // raise an error
+  //     exit(1);
+  //   }
+  //   fprintf(f, "%llu, %u, %f, %u, %lu, %lu, %u\n",
+  //           get_cur_time() - data->afl->start_time, data->covman_total->n_execs,
+  //           weight[id], covman->n_execs,
+  //           set_length(covman->covered_prev), set_length(covman->singletons),
+  //           covman->n_sglt_clusts);
+  //   fclose(f);
+  //   ck_free(filename);
+  // }
 
   data->last_record_write_time = get_cur_time();
-  ck_free(filename);
 }
 
 // write the records to a file
