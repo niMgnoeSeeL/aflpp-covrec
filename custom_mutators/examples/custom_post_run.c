@@ -458,6 +458,9 @@ ml_stat_t *compute_mean_local_estimator(my_mutator_t *data, double *weight,
 void update_record(my_mutator_t *data, double *weight);
 
 void afl_custom_post_run(my_mutator_t *data) {
+  // time check for debugging
+  u64 debug_time_start = get_cur_time();
+  u64 debug_time_prev = get_cur_time();
   if (data->reset_after_tmin &&
       get_cur_time() - data->afl->start_time > data->tmin) {
     reset_entire_data(data);
@@ -509,6 +512,7 @@ void afl_custom_post_run(my_mutator_t *data) {
     cur = cur->prev;
   }
 
+  debug_time_prev = get_cur_time();
   record_t *stop_record = cur;
   for (i = 0; i < data->afl->fsrv.map_size; i++) {
     // if the trace bit is nonzero, then this has been covered in this run
@@ -541,10 +545,12 @@ void afl_custom_post_run(my_mutator_t *data) {
   update_singleton_clusters(data->covman_total, new_sglt_clust_total);
   update_singleton_clusters(data->covman_reset, new_sglt_clust_reset);
   update_singleton_clusters(covman_curr, new_sglt_clust_curr);
+  u64 debug_time_BitIter = get_cur_time() - debug_time_prev;
 
   // if the singleton status has changed, add a new record
   // otherwise, if it has been 10 minutes since the last record or the
   // force_save is true, add a new record
+  debug_time_prev = get_cur_time();
   u64 time_so_far = get_cur_time() - data->afl->start_time;
   u64 threshold = 60000;
   if (time_so_far > 600000) {  // 10 minutes
@@ -617,6 +623,7 @@ void afl_custom_post_run(my_mutator_t *data) {
     data->records_len++;
     data->last_record_add_time = get_cur_time();
   }
+  u64 debug_time_AddRecord = get_cur_time() - debug_time_prev;
 
   // update the record every 1 seconds
   threshold = 1000;
@@ -635,11 +642,16 @@ void afl_custom_post_run(my_mutator_t *data) {
   if (time_so_far > 43200000) {  // 12 hours
     threshold = 1800000;        // 30 minutes
   }
+  debug_time_prev = get_cur_time();
   if (get_cur_time() - data->last_record_write_time > threshold) {
     update_record(data, weight); 
   }
+  u64 debug_time_WriteRecord = get_cur_time() - debug_time_prev;
 
   free(weight);
+  u64 debug_time_total = get_cur_time() - debug_time_start;
+  printf("SMDEBUG::afl_custom_post_run::BitIter = %llus, AddRecord = %llus, WriteRecord = %llus, Total = %llus\n",
+         debug_time_BitIter / 1000, debug_time_AddRecord / 1000, debug_time_WriteRecord / 1000, debug_time_total / 1000);
   return;
 }
 
