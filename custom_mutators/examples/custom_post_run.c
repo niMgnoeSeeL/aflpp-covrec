@@ -455,7 +455,7 @@ ml_stat_t *compute_mean_local_estimator(my_mutator_t *data, double *weight,
   return ml_stat;
 }
 
-void update_record(my_mutator_t *data, double *weight);
+void update_record(my_mutator_t *data, double *weight, bool is_end);
 
 void afl_custom_post_run(my_mutator_t *data) {
   // time check for debugging
@@ -644,38 +644,50 @@ void afl_custom_post_run(my_mutator_t *data) {
   }
   debug_time_prev = get_cur_time();
   if (get_cur_time() - data->last_record_write_time > threshold) {
-    update_record(data, weight); 
+    update_record(data, weight, false);
   }
   u64 debug_time_WriteRecord = get_cur_time() - debug_time_prev;
 
   free(weight);
   u64 debug_time_total = get_cur_time() - debug_time_start;
-  printf("SMDEBUG::afl_custom_post_run::BitIter = %llus, AddRecord = %llus, WriteRecord = %llus, Total = %llus\n",
-         debug_time_BitIter / 1000, debug_time_AddRecord / 1000, debug_time_WriteRecord / 1000, debug_time_total / 1000);
+  // printf("SMDEBUG::afl_custom_post_run::BitIter = %llus, AddRecord = %llus, WriteRecord = %llus, Total = %llus, len_records = %u\n",
+  //        debug_time_BitIter / 1000, debug_time_AddRecord / 1000, debug_time_WriteRecord / 1000, debug_time_total / 1000, data->records_len);
   return;
 }
 
-void update_record(my_mutator_t *data, double *weight) {
+void update_record(my_mutator_t *data, double *weight, bool is_end) {
   // filename: afl->out_dir/records.csv
   char *filename = (char *) alloc_printf("%s/records.csv", data->afl->out_dir);
-  FILE *f = fopen(filename, "w");
-  if (!f) {
-    perror("fopen");
-    return;
+  FILE *f;
+  // check if the file exists
+  if (access(filename, F_OK) == 0) {
+    // if the file exists, open it and append the records
+    f = fopen(filename, "a");
+  } else {
+    // if the file does not exist, create it and write the header
+    f = fopen(filename, "w");
+    if (!f) {
+      perror("fopen");
+      return;
+    }
+    fprintf(f,
+            "time, #execs, #seeds, #items, "
+            "#covered, #singletons, #sglt_clusts, "
+            "#coveredR, #singletonsR, #sglt_clustsR, "
+            "ML_sglt, ML_sglt_clusts, "
+            "remainW, lesti_mean, lesti_min, lesti_min_id, lesti_max, lesti_max_id, "
+            "#foundnew, done, update?\n");
   }
-  fprintf(f,
-          "time, #execs, #seeds, #items, "
-          "#covered, #singletons, #sglt_clusts, "
-          "#coveredR, #singletonsR, #sglt_clustsR, "
-          "ML_sglt, ML_sglt_clusts, "
-          "remainW, lesti_mean, lesti_min, lesti_min_id, lesti_max, lesti_max_id, "
-          "#foundnew, done, update?\n");
   record_t *cur = data->records;
   // find the first record
   while (cur && cur->prev) {
     cur = cur->prev;
   }
   while (cur) {
+    // check if the record is done
+    if (cur->execs * 2 >= data->covman_total->n_execs) {
+      break;
+    }
     fprintf(f, "%llu, %llu, %u, %u, "
             "%lu, %lu, %lu, "
             "%lu, %lu, %lu, "
@@ -691,8 +703,51 @@ void update_record(my_mutator_t *data, double *weight) {
             cur->n_found_new, cur->execs * 2 < data->covman_total->n_execs ? "true" : "false",
             cur->is_update ? "true" : "false");
     cur = cur->next;
+    // remove the record
+    if (cur) {
+      free(cur->prev->covered);
+      free(cur->prev);
+    }
+    cur->prev = NULL;
+    data->records_len--;
   }
   fclose(f);
+
+  // write not done records to a file if it is the end
+  if (is_end) {
+    char *filename_not_done = (char *) alloc_printf("%s/records_not_done.csv", data->afl->out_dir);
+    FILE *f_not_done = fopen(filename_not_done, "w");
+    if (!f_not_done) {
+      perror("fopen");
+      return;
+    }
+    fprintf(f_not_done,
+            "time, #execs, #seeds, #items, "
+            "#covered, #singletons, #sglt_clusts, "
+            "#coveredR, #singletonsR, #sglt_clustsR, "
+            "ML_sglt, ML_sglt_clusts, "
+            "remainW, lesti_mean, lesti_min, lesti_min_id, lesti_max, lesti_max_id, "
+            "#foundnew, done, update?\n");
+    while (cur) {
+      fprintf(f_not_done, "%llu, %llu, %u, %u, "
+              "%lu, %lu, %lu, "
+              "%lu, %lu, %lu, "
+              "%f, %f, "
+              "%f, %f, %f, %u, %f, %u, "
+              "%llu, %s, %s\n", 
+              cur->time_ms, cur->execs, cur->n_seeds, cur->n_items,
+              cur->n_covered_total, cur->n_singletons_total, cur->n_sglt_clusts_total,
+              cur->n_covered_reset, cur->n_singletons_reset, cur->n_sglt_clusts_reset,
+              cur->n_ml_sglt, cur->n_ml_sglt_clusts,
+              cur->remain_weight, cur->lesti_mean, cur->lesti_min, cur->lesti_min_id,
+              cur->lesti_max, cur->lesti_max_id,
+              cur->n_found_new, cur->execs * 2 < data->covman_total->n_execs ? "true" : "false",
+              cur->is_update ? "true" : "false");
+      cur = cur->next;
+    }
+    fclose(f_not_done);
+  }
+
   ck_free(filename);
 
   // // record the covmanagers for each item under the directory local_records
@@ -738,17 +793,17 @@ void afl_custom_end_job(my_mutator_t *data) {
   // record the last status
   data->force_save = true;
   afl_custom_post_run(data);
-
   // update the record
   u32 N = data->afl->queued_items;
   double *weight = (double *)malloc(N * sizeof(double));
   compute_alias_weights(data->afl->alias_probability, data->afl->alias_table, N, weight);
-  update_record(data, weight);
+  update_record(data, weight, true);
   free(weight);
   return;
 }
 
 void afl_custom_deinit(my_mutator_t *data) {
+  afl_custom_end_job(data);
   record_t *cur = data->records;
   while (cur) {
     record_t *tmp = cur;
@@ -757,16 +812,14 @@ void afl_custom_deinit(my_mutator_t *data) {
     free(tmp);
   }
   destroy_covmanager(data->covman_total);
+  fflush(stdout);
   destroy_covmanager(data->covman_reset);
-  free(data->covman_total);
-  free(data->covman_reset);
-
+  fflush(stdout);
   for (u32 i = 0; i < data->item2man->n_items; ++i) {
     destroy_covmanager(data->item2man->covman_list[i]);
   }
   free(data->item2man->id_list);
   free(data->item2man->covman_list);
   free(data->item2man);
-
   free(data);
 }
