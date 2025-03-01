@@ -418,6 +418,8 @@ void compute_alias_weights(double *alias_probability, u32 *alias_table, u32 N, d
     printf("SMDEBUG::compute_alias_weights::sum = %f\n", sum);
     FATAL("Error: sum of weights is not 1.0");
   }
+  free(_alias_probability);
+  free(_alias_table);
 }
 
 
@@ -599,12 +601,14 @@ void afl_custom_post_run(my_mutator_t *data) {
     new_record->n_sglt_clusts_reset = data->covman_reset->n_sglt_clusts;
     new_record->n_singletons_reset = set_length(data->covman_reset->singletons);
 
-    new_record->n_ml_sglt = compute_mean_local_estimator(data, weight, false)->esti;
+    ml_stat_t *ml_stat = compute_mean_local_estimator(data, weight, false);
+    new_record->n_ml_sglt = ml_stat->esti;
+    free(ml_stat);
     // scale it to the number of executions to compare with others
     // (e.g., # singletons)
     new_record->n_ml_sglt *= new_record->execs;
 
-    ml_stat_t *ml_stat = compute_mean_local_estimator(data, weight, true);
+    ml_stat = compute_mean_local_estimator(data, weight, true);
     new_record->n_ml_sglt_clusts = ml_stat->esti;
     // scale it to the number of executions to compare with others
     // (e.g., # singletons)
@@ -615,6 +619,7 @@ void afl_custom_post_run(my_mutator_t *data) {
     new_record->lesti_max = ml_stat->lesti_max;
     new_record->lesti_min_id = ml_stat->lesti_min_id;
     new_record->lesti_max_id = ml_stat->lesti_max_id;
+    free(ml_stat);
 
     new_record->n_items = data->item2man->n_items;
     
@@ -768,6 +773,7 @@ void update_record(my_mutator_t *data, double *weight, bool is_end) {
       cur = cur->next;
     }
     fclose(f_not_done);
+    ck_free(filename_not_done);
   }
 
   ck_free(filename);
