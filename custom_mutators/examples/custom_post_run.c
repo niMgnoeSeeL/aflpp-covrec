@@ -130,6 +130,34 @@ covmanager_t *covmanager_init(void) {
   return covman;
 }
 
+u32 compute_record_memory(record_t *record) {
+  u32 size = 0;
+  size += sizeof(record_t);
+  size += set_memory(record->covered);
+  return size;
+}
+
+u32 compute_covmanager_memory(covmanager_t *covman) {
+  u32 size = 0;
+  size += sizeof(covmanager_t);      // The covmanager struct itself
+
+  // The 'covered_prev' set
+  size += set_memory(covman->covered_prev);
+
+  // Each setofset_t node plus its SimpleSet
+  setofset_t *cur = covman->sglt_clusts;
+  while (cur) {
+      size += sizeof(setofset_t);    // the list node itself
+      size += set_memory(cur->set);  // the SimpleSet
+      cur = cur->next;
+  }
+
+  // The 'singletons' set
+  size += set_memory(covman->singletons);
+
+  return size;
+}
+
 void reset_covmanager(covmanager_t *covman) {
   // Note. we do not reset n_execs
   set_clear(covman->covered_prev);
@@ -473,12 +501,12 @@ void afl_custom_post_run(my_mutator_t *data) {
   data->covman_reset->n_execs = data->covman_total->n_execs;
 
   u32  i;
-  bool add_new_record = false;
+  bool is_update = false;
 
   // check whether the number of seeds has changed
   if (data->n_prev_seeds != data->afl->queued_items) {
     data->n_prev_seeds = data->afl->queued_items;
-    add_new_record = true;
+    is_update = true;
     reset_covmanager(data->covman_reset);
   }
 
@@ -533,12 +561,12 @@ void afl_custom_post_run(my_mutator_t *data) {
       // update covmanager:
       // if the key was not in covered_prev, add it as a new singleton
       // if the key was in singletons, remove it from singletons
-      add_new_record = update_covmanager(
-        data->covman_total, key, new_sglt_clust_total) || add_new_record;
-      add_new_record = update_covmanager(
-        data->covman_reset, key, new_sglt_clust_reset) || add_new_record;
-      add_new_record = update_covmanager(
-        covman_curr, key, new_sglt_clust_curr) || add_new_record;
+      is_update = update_covmanager(
+        data->covman_total, key, new_sglt_clust_total) || is_update;
+      is_update = update_covmanager(
+        data->covman_reset, key, new_sglt_clust_reset) || is_update;
+      is_update = update_covmanager(
+        covman_curr, key, new_sglt_clust_curr) || is_update;
     }
   }
   // if there is new singleton cluster, add it to sglt_clusts
@@ -547,30 +575,16 @@ void afl_custom_post_run(my_mutator_t *data) {
   update_singleton_clusters(covman_curr, new_sglt_clust_curr);
   u64 debug_time_BitIter = get_cur_time() - debug_time_prev;
 
-  // if the singleton status has changed, add a new record
-  // otherwise, if it has been 10 minutes since the last record or the
-  // force_save is true, add a new record
   debug_time_prev = get_cur_time();
+  
+  // only add record if time_so_far > previous record time * 1.05
   u64 time_so_far = get_cur_time() - data->afl->start_time;
-  u64 threshold = 60000;
-  if (time_so_far > 600000) {  // 10 minutes
-    threshold = 600000;        // 10 minutes
-  }
-  if (time_so_far > 3600000) {  // 1 hour
-    threshold = 3600000;         // 1 hour
-  }
-  if (time_so_far > 21600000) {  // 6 hours
-    threshold = 10800000;        // 3 hours
-  }
-  if (time_so_far > 43200000) {  // 12 hours
-    threshold = 21600000;        // 6 hours
-  }
+  bool add_new_record = (!data->records) || (time_so_far * 100 >= data->records->time_ms * 105);
 
   u32 N = data->afl->queued_items;
   double *weight = (double *)malloc(N * sizeof(double));
   compute_alias_weights(data->afl->alias_probability, data->afl->alias_table, N, weight);
-  if (add_new_record || data->force_save ||
-      get_cur_time() - data->last_record_add_time > threshold) {
+  if (add_new_record || data->force_save) {
     record_t *new_record = (record_t *)malloc(sizeof(record_t));
     new_record->time_ms = get_cur_time() - data->afl->start_time;
     if (!data->reset_after_tmin) { new_record->time_ms -= data->tmin; }
@@ -614,7 +628,7 @@ void afl_custom_post_run(my_mutator_t *data) {
     new_record->covered = covered_so_far;
     
     new_record->n_found_new = 0;
-    new_record->is_update = add_new_record;
+    // new_record->is_update = add_new_record;
     new_record->prev = data->records;
     new_record->next = NULL;
 
@@ -626,7 +640,7 @@ void afl_custom_post_run(my_mutator_t *data) {
   u64 debug_time_AddRecord = get_cur_time() - debug_time_prev;
 
   // update the record every 1 seconds
-  threshold = 1000;
+  int threshold = 1000;
   if (time_so_far > 60000) {  // 1 minute
     threshold = 10000;        // 10 seconds
   }
@@ -650,8 +664,16 @@ void afl_custom_post_run(my_mutator_t *data) {
 
   free(weight);
   u64 debug_time_total = get_cur_time() - debug_time_start;
-  // printf("SMDEBUG::afl_custom_post_run::BitIter = %llus, AddRecord = %llus, WriteRecord = %llus, Total = %llus, len_records = %u\n",
-  //        debug_time_BitIter / 1000, debug_time_AddRecord / 1000, debug_time_WriteRecord / 1000, debug_time_total / 1000, data->records_len);
+  // u32 total_memory = 0;
+  // total_memory += compute_covmanager_memory(data->covman_total);
+  // total_memory += compute_covmanager_memory(data->covman_reset);
+  // for (u32 i = 0; i < data->item2man->n_items; ++i) {
+  //   total_memory += compute_covmanager_memory(data->item2man->covman_list[i]);
+  // }
+  // total_memory += compute_record_memory(data->records);
+  // float mgb = (float)total_memory / 1024 / 1024 / 1024;
+  // printf("SMDEBUG::afl_custom_post_run::BitIter = %llus, AddRecord = %llus, WriteRecord = %llus, Total = %llus, len_records = %u, total_memory = %fGB\n",
+  //        debug_time_BitIter / 1000, debug_time_AddRecord / 1000, debug_time_WriteRecord / 1000, debug_time_total / 1000, data->records_len, mgb);
   return;
 }
 
@@ -676,7 +698,7 @@ void update_record(my_mutator_t *data, double *weight, bool is_end) {
             "#coveredR, #singletonsR, #sglt_clustsR, "
             "ML_sglt, ML_sglt_clusts, "
             "remainW, lesti_mean, lesti_min, lesti_min_id, lesti_max, lesti_max_id, "
-            "#foundnew, done, update?\n");
+            "#foundnew, done\n");
   }
   record_t *cur = data->records;
   // find the first record
@@ -693,15 +715,15 @@ void update_record(my_mutator_t *data, double *weight, bool is_end) {
             "%lu, %lu, %lu, "
             "%f, %f, "
             "%f, %f, %f, %u, %f, %u, "
-            "%llu, %s, %s\n", 
+            "%llu, %s\n", 
             cur->time_ms, cur->execs, cur->n_seeds, cur->n_items,
             cur->n_covered_total, cur->n_singletons_total, cur->n_sglt_clusts_total,
             cur->n_covered_reset, cur->n_singletons_reset, cur->n_sglt_clusts_reset,
             cur->n_ml_sglt, cur->n_ml_sglt_clusts,
             cur->remain_weight, cur->lesti_mean, cur->lesti_min, cur->lesti_min_id,
             cur->lesti_max, cur->lesti_max_id,
-            cur->n_found_new, cur->execs * 2 < data->covman_total->n_execs ? "true" : "false",
-            cur->is_update ? "true" : "false");
+            cur->n_found_new, cur->execs * 2 < data->covman_total->n_execs ? "true" : "false");
+            // cur->is_update ? "true" : "false");
     cur = cur->next;
     // remove the record
     if (cur) {

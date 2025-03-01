@@ -189,6 +189,9 @@ char **set_to_array(SimpleSet *set, uint64_t *size);
 */
 int set_cmp(SimpleSet *left, SimpleSet *right);
 
+int node_memory(simple_set_node *node);
+int set_memory(SimpleSet *set);
+
 // void set_printf(SimpleSet *set);                                           /*
 // TODO: implement */
 

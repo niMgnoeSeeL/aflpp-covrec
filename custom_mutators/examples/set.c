@@ -213,6 +213,26 @@ int set_cmp(SimpleSet *left, SimpleSet *right) {
   return SET_EQUAL;
 }
 
+int node_memory(simple_set_node *node) {
+  return sizeof(simple_set_node) + strlen(node->_key) + 1;
+}
+
+int set_memory(SimpleSet *set) {
+  int total = 0;
+  total += sizeof(SimpleSet);
+  total += set->number_nodes * sizeof(simple_set_node *);
+
+  // For each slot in set->nodes, if non-null, count its memory
+  for (uint64_t i = 0; i < set->number_nodes; i++) {
+      if (set->nodes[i] != NULL) {
+          simple_set_node *node = set->nodes[i];
+          // node_memory(node) returns sizeof(node) + strlen(node->_key) + 1
+          total += node_memory(node);
+      }
+  }
+  return total;
+}
+
 /*******************************************************************************
 ***        PRIVATE FUNCTIONS
 *******************************************************************************/
