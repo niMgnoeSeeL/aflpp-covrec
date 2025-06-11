@@ -61,6 +61,17 @@ typedef struct my_mutator {
   u32  tmin;
   u64  last_record_write_time;
 
+  // Neil's data
+  bool initialize_after_start;  // true;
+  u32  incidence_n_exec;        // e.g., 100;
+  u32  curr_n_exec;             // e.g., 0;
+  u32  map_size;  // to check whether the coverage vector size is consistent
+  u32  map_size_byte;            // to assign the size of the coverage vector
+  u32  max_memory_byte;          // e.g., 1,048,576=1mb;
+  u8  *coverage_vector;          // cumulative coverage vector
+  u8  *coverage_matrix;          // coverage vector record
+  u32  coverage_matrix_byteidx;  // index for the coverage matrix
+  u32  num_matrix;               // number of coverage matrix
 } my_mutator_t;
 
 inline u64 get_cur_time(void) {
@@ -94,11 +105,11 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
   data->force_save = false;
   data->last_record_add_time = get_cur_time();
   data->reset_after_tmin = true;
-  data->tmin = 600000;
+  data->tmin = 0;
   data->last_record_write_time = get_cur_time();
 
   // check if the records file exists; if so, remove it
-  char *filename = alloc_printf("%s/records.csv", afl->out_dir);
+  char *filename = (char *)alloc_printf("%s/records.csv", afl->out_dir);
   if (access(filename, F_OK) == 0) {
     if (remove(filename) == 0) {
       printf("Removed the existing records file\n");
@@ -107,6 +118,8 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
     }
   }
 
+  // Neil's data
+  data->initialize_after_start = true;
   return data;
 }
 
@@ -135,6 +148,13 @@ void reset_data(my_mutator_t *data) {
   data->force_save = false;
   data->last_record_add_time = get_cur_time();
   data->last_record_write_time = get_cur_time();
+
+  // Neil's data
+  data->curr_n_exec = 0;
+  memset(data->coverage_vector, 0, data->map_size_byte);
+  memset(data->coverage_matrix, 0, data->max_memory_byte);
+  data->coverage_matrix_byteidx = 0;
+  data->num_matrix = 0;
 }
 
 const char *idx_to_str(u32 idx) {
@@ -144,7 +164,18 @@ const char *idx_to_str(u32 idx) {
 }
 
 void afl_custom_post_run(my_mutator_t *data) {
-  // printf("|C%d", data->afl->record_sampling);
+  if (data->initialize_after_start) {
+    data->incidence_n_exec = 10;
+    data->curr_n_exec = 0;
+    data->map_size = data->afl->fsrv.map_size;
+    data->map_size_byte = (data->map_size + 7) / 8;
+    data->max_memory_byte = 1048576;  // 1kb
+    data->coverage_vector = (u8 *)malloc(data->map_size_byte);
+    data->coverage_matrix = (u8 *)malloc(data->max_memory_byte);
+    data->coverage_matrix_byteidx = 0;
+    data->num_matrix = 0;
+    data->initialize_after_start = false;
+  }
   if (data->reset_after_tmin &&
       get_cur_time() - data->afl->start_time > data->tmin) {
     reset_data(data);
@@ -152,7 +183,6 @@ void afl_custom_post_run(my_mutator_t *data) {
   }
 
   if (!data->afl->record_sampling) { return; }
-  // printf("|R%d", data->afl->record_sampling);
   data->afl->record_sampling = false;
   data->n_execs++;
 
@@ -174,6 +204,11 @@ void afl_custom_post_run(my_mutator_t *data) {
   for (i = 0; i < data->afl->fsrv.map_size; i++) {
     // if the trace bit is nonzero, then this has been covered in this run
     if (data->afl->fsrv.trace_bits[i]) {
+      // Neil's data:: update the coverage vector
+      int byte_idx = i / 8;
+      int bit_offset = i % 8;
+      data->coverage_vector[byte_idx] |= (1 << bit_offset);
+
       const char *key = idx_to_str(i);
       // iterate over the records and update n_found_new
       record_t *cur = data->records;
@@ -234,6 +269,50 @@ void afl_custom_post_run(my_mutator_t *data) {
           }
         }
       }
+    }
+  }
+
+  // Neil's data:: increase the current number of executions
+  //               if it reaches the incidence number, store the coverage vector
+  //               to the coverage matrix and reset the coverage vector
+  //               if the coverage matrix capacity is reached, write the matrix
+  //               to a file
+  data->curr_n_exec++;
+  if (data->curr_n_exec >= data->incidence_n_exec) {
+    printf("DEBUG:: Coverage matrix filled up %d% (%d/%d)\n",
+           data->coverage_matrix_byteidx * 100 / data->max_memory_byte,
+           data->coverage_matrix_byteidx, data->max_memory_byte);
+    // check the map size consistency
+    if (data->map_size != data->afl->fsrv.map_size) {
+      FATAL(
+          "Error: map size inconsistency; (map_size) %u != %u "
+          "(afl->fsrv.map_size)",
+          data->map_size, data->afl->fsrv.map_size);
+    }
+    for (i = 0; i < data->map_size_byte; i++) {
+      data->coverage_matrix[data->coverage_matrix_byteidx + i] =
+          data->coverage_vector[i];
+    }
+    data->coverage_matrix_byteidx += data->map_size_byte;
+    data->curr_n_exec = 0;
+    memset(data->coverage_vector, 0, data->map_size_byte);
+    if (data->coverage_matrix_byteidx + data->map_size_byte >
+        data->max_memory_byte) {
+      if (!data->reset_after_tmin) {
+        char *filename = alloc_printf("%s/covmat_%u_%u.bin", data->afl->out_dir,
+                                      data->map_size, data->num_matrix);
+        FILE *f = fopen(filename, "wb");
+        if (!f) {
+          perror("fopen");
+          return;
+        }
+        fwrite(data->coverage_matrix, sizeof(u8), data->max_memory_byte, f);
+        fclose(f);
+        ck_free(filename);
+      }
+      data->coverage_matrix_byteidx = 0;
+      data->num_matrix++;
+      memset(data->coverage_matrix, 0, data->max_memory_byte);
     }
   }
   // if there is new singleton cluster, add it to sglt_clusts
@@ -352,10 +431,25 @@ void afl_custom_end_job(my_mutator_t *data) {
 
   // update the record
   update_record(data);
+
+  // For Neil's data
+  if (data->coverage_matrix_byteidx > 0) {
+    char *filename = alloc_printf("%s/covmat_%u_%u.bin", data->afl->out_dir,
+                                  data->map_size, data->num_matrix);
+    FILE *f = fopen(filename, "wb");
+    if (!f) {
+      perror("fopen");
+      return;
+    }
+    fwrite(data->coverage_matrix, sizeof(u8), data->coverage_matrix_byteidx, f);
+    fclose(f);
+    ck_free(filename);
+  }
   return;
 }
 
 void afl_custom_deinit(my_mutator_t *data) {
+  afl_custom_end_job(data);
   set_destroy(data->covered_prev);
   set_destroy(data->singletons);
   // ck_free(data->trace_bits_prev);
