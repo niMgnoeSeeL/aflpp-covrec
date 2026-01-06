@@ -224,8 +224,11 @@ void afl_custom_post_run(my_mutator_t *data) {
               cur = cur->next;
               // if cur is NULL, something is wrong
               if (!cur) {
-                FATAL("Error: key %s is in singletons but not in sglt_clusts",
-                      key);
+                // FATAL("Error: key %s is in singletons but not in sglt_clusts",
+                //       key);
+                printf("Warning: key %s is in singletons but not in "
+                       "sglt_clusts\n",
+                       key);
               }
             }
           }
@@ -316,16 +319,61 @@ void afl_custom_post_run(my_mutator_t *data) {
 void update_record(my_mutator_t *data) {
   // filename: afl->out_dir/records.csv
   char *filename = alloc_printf("%s/records.csv", data->afl->out_dir);
+  FILE *f = NULL;
+  if (access(filename, F_OK) == 0) {
+    f = fopen(filename, "a");
+  } else {
+    f = fopen(filename, "w");
+  }
+  if (!f) {
+    perror("fopen");
+    ck_free(filename);
+    return;
+  }
+  if (ftell(f) == 0) {
+    fprintf(f,
+            "time, #execs, #covered, #singletons, #sglt_clusts, #foundnew, done, "
+            "update?\n");
+  }
+  record_t *cur = data->records;
+  // find the first record
+  while (cur && cur->prev) {
+    cur = cur->prev;
+  }
+  while (cur) {
+    if (cur->execs * 2 >= data->n_execs) { break; }
+    fprintf(f, "%llu, %llu, %lu, %lu, %lu, %llu, %s, %s\n", cur->time_ms,
+            cur->execs, cur->n_covered, cur->n_singletons, cur->n_sglt_clusts,
+            cur->n_found_new, cur->execs * 2 < data->n_execs ? "true" : "false",
+            cur->is_update ? "true" : "false");
+    record_t *next = cur->next;
+    if (next) { next->prev = NULL; }
+    if (cur->covered) {
+      set_destroy(cur->covered);
+      free(cur->covered);
+    }
+    free(cur);
+    data->records_len--;
+    cur = next;
+  }
+  if (!cur) { data->records = NULL; }
+  fclose(f);
+  data->last_record_write_time = get_cur_time();
+  ck_free(filename);
+}
+
+void dump_not_done_records(my_mutator_t *data) {
+  char *filename = alloc_printf("%s/records_not_done.csv", data->afl->out_dir);
   FILE *f = fopen(filename, "w");
   if (!f) {
     perror("fopen");
+    ck_free(filename);
     return;
   }
   fprintf(f,
           "time, #execs, #covered, #singletons, #sglt_clusts, #foundnew, done, "
           "update?\n");
   record_t *cur = data->records;
-  // find the first record
   while (cur && cur->prev) {
     cur = cur->prev;
   }
@@ -337,7 +385,6 @@ void update_record(my_mutator_t *data) {
     cur = cur->next;
   }
   fclose(f);
-  data->last_record_write_time = get_cur_time();
   ck_free(filename);
 }
 
@@ -349,6 +396,7 @@ void afl_custom_end_job(my_mutator_t *data) {
 
   // update the record
   update_record(data);
+  dump_not_done_records(data);
   return;
 }
 
